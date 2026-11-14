@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Просто иди вправо</title>
+<!-- iPhone / Android: запуск с экрана «Домой» на весь экран -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Иди вправо">
+<meta name="theme-color" content="#111111">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  html,body{margin:0;height:100%;background:#111;overflow:hidden;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;box-sizing:border-box;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  canvas{background:#f4efe6;box-shadow:0 0 0 4px #000}
+  /* сенсорные зоны: левая половина — ходьба (две широкие полосы), правая — прыжок */
+  #zones{position:fixed;inset:0;display:none;pointer-events:none}
+  #zones div{position:absolute;top:0;bottom:0;display:flex;align-items:flex-end;justify-content:center;padding-bottom:18px;
+    font:700 22px system-ui,sans-serif;color:rgba(255,255,255,.28);transition:background .08s}
+  #zl{left:0;width:18%;border-right:2px dashed rgba(255,255,255,.12)}
+  #zr{left:18%;width:20%;border-right:2px dashed rgba(255,255,255,.12)}
+  #zj{left:38%;width:62%}
+  #intro{position:fixed;inset:0;display:none;z-index:5;background:rgba(10,10,10,.86);color:#fff;font-family:system-ui,sans-serif}
+  #intro .z{position:absolute;top:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:12px;box-sizing:border-box}
+  #intro .z b{font-size:46px;line-height:1}
+  #intro .z span{font-size:17px;margin-top:10px;opacity:.9}
+  #intro .z1{left:0;width:18%;background:rgba(255,255,255,.06);border-right:2px dashed #ffd23f}
+  #intro .z2{left:18%;width:20%;background:rgba(255,255,255,.10);border-right:2px dashed #ffd23f}
+  #intro .z3{left:38%;width:62%;background:rgba(255,210,63,.10)}
+  #intro .tap{position:absolute;left:0;right:0;bottom:22px;text-align:center;font-size:18px;font-weight:700;color:#ffd23f}
+  #intro .tip{position:absolute;left:0;right:0;bottom:52px;text-align:center;font-size:14px;opacity:.75;display:none;padding:0 20px}
+  #rotate{position:fixed;inset:0;z-index:9;display:none;background:#111;color:#fff;font:700 22px system-ui,sans-serif;
+    align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:24px;box-sizing:border-box}
+  #rotate b{font-size:64px;margin-bottom:16px;display:block;animation:rot 1.6s ease-in-out infinite}
+  @keyframes rot{0%,30%{transform:rotate(0)}60%,100%{transform:rotate(-90deg)}}
+  #intro .ttl{position:absolute;left:0;right:0;top:18px;text-align:center;font-size:22px;font-weight:800}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="960" height="540"></canvas></div>
+<div id="zones"><div id="zl">◀</div><div id="zr">▶</div><div id="zj">прыжок</div></div>
+<div id="intro">
+  <div class="ttl">Управление</div>
+  <div class="z z1"><b>◀</b><span>влево</span></div>
+  <div class="z z2"><b>▶</b><span>вправо</span></div>
+  <div class="z z3"><b>▲</b><span>Прыжок — нажми в любом месте справа.<br>Прыжок всегда одинаковый.</span></div>
+  <div class="tip" id="iostip">Совет для iPhone: «Поделиться» → «На экран Домой» — игра будет открываться на весь экран, как приложение.</div>
+  <div class="tap">Коснись экрана, чтобы начать</div>
+</div>
+<div id="rotate"><b>📱</b>Поверни телефон горизонтально</div>
+<script>
+(() => {
+const W = 960, H = 540, GY = 460, WORLD = 2100;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+const wrapEl = document.getElementById('wrap');
+function fit(){
+  // учитываем «чёлку» и полоску внизу на iPhone (safe-area)
+  let aw = innerWidth, ah = innerHeight;
+  try {
+    const cs = getComputedStyle(wrapEl);
+    aw -= (parseFloat(cs.paddingLeft)||0) + (parseFloat(cs.paddingRight)||0);
+    ah -= (parseFloat(cs.paddingTop)||0) + (parseFloat(cs.paddingBottom)||0);
+  } catch(e){}
+  const s = Math.min(aw / W, ah / H);
+  cv.style.width = (W * s) + 'px';
+  cv.style.height = (H * s) + 'px';
+}
+addEventListener('resize', fit); addEventListener('orientationchange', () => setTimeout(fit, 250)); fit();
+
+/* ---------- ввод ---------- */
+const keys = {left:false,right:false,jump:false};
+let jumpPressed = false;
+const map = {ArrowLeft:'left',KeyA:'left',ArrowRight:'right',KeyD:'right',ArrowUp:'jump',KeyW:'jump',Space:'jump'};
+addEventListener('keydown', e => {
+  const k = map[e.code]; if (!k) { if (e.code==='KeyR') hardRestart(); return; }
+  e.preventDefault(); initAudio();
+  if (k==='jump' && !keys.jump) jumpPressed = true;
+  keys[k] = true;
+  if (state.won && k==='jump') hardRestart();
+});
+addEventListener('keyup', e => { const k = map[e.code]; if (k) keys[k] = false; });
+/* сенсор: каждое касание относится к зоне по месту, где палец сейчас */
+const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+const zonesEl = document.getElementById('zones'), introEl = document.getElementById('intro');
+let paused = false;
+if (isTouch){ zonesEl.style.display = 'block'; introEl.style.display = 'block'; paused = true; }
+// подсказка «На экран Домой» — только на iPhone/iPad и только если игра открыта в Safari, а не с экрана «Домой»
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const standalone = (window.navigator && navigator.standalone) || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+if (isIOS && !standalone) document.getElementById('iostip').style.display = 'block';
+// вертикально играть нельзя — просим повернуть и ставим на паузу
+const rotateEl = document.getElementById('rotate');
+let portrait = false;
+function checkOrient(){ portrait = isTouch && innerHeight > innerWidth; rotateEl.style.display = portrait ? 'flex' : 'none'; }
+addEventListener('resize', checkOrient); checkOrient();
+// iPhone: не даём щипку и двойному тапу масштабировать страницу
+for (const ev of ['gesturestart','gesturechange','gestureend','dblclick']) addEventListener(ev, e => e.preventDefault(), {passive:false});
+function zoneOf(x){ const w = innerWidth; return x < w*0.18 ? 'left' : x < w*0.38 ? 'right' : 'jump'; }
+function syncTouches(list){
+  const now = {left:false,right:false,jump:false};
+  for (const t of list) now[zoneOf(t.clientX)] = true;
+  if (now.jump && !keys.jump) jumpPressed = true;
+  for (const k in now) keys[k] = now[k];
+}
+function onTouch(e){
+  e.preventDefault(); initAudio();
+  if (portrait) return;
+  if (paused){ if (e.type==='touchstart'){ paused = false; introEl.style.display = 'none'; } return; }
+  if (state.won && e.type==='touchstart'){ hardRestart(); return; }
+  syncTouches(e.touches);
+}
+for (const ev of ['touchstart','touchmove','touchend','touchcancel']) addEventListener(ev, onTouch, {passive:false});
+
+/* ---------- звук ---------- */
+let ac = null;
+function initAudio(){
+  // iPhone: звук разрешается только после касания, и контекст может «уснуть» — будим его
+  if (ac){ if (ac.state === 'suspended') { try { ac.resume(); } catch(e){} } return; }
+  try { ac = new (window.AudioContext||window.webkitAudioContext)(); } catch(e){}
+}
+function beep(f1, f2, dur, type='square', vol=0.08){
+  if (!ac) return;
+  try {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(f1, ac.currentTime);
+    o.frequency.exponentialRampToValueAtTime(Math.max(f2,30), ac.currentTime+dur);
+    g.gain.setValueAtTime(vol, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime+dur);
+    o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime+dur);
+  } catch(e){}
+}
+
+/* ---------- состояние ---------- */
+const taunts = [
+  'Ха-ха.', 'Ну кто так играет?', 'Это было предсказуемо.', 'Может, хватит?',
+  'Я даже не старался.', 'Ой. Больно?', 'Попробуй ещё. Мне весело.',
+  'Ты читал табличку? Зря.', 'Игра работает правильно.', 'Почти! (нет)',
+  'Не сдавайся. Мне нужны зрители.', 'Это не баг, это фича.',
+  'Пол тоже умеет врать.', 'Доверие — это слабость.', 'Ещё разок?'
+];
+const ICICLES = [1520, 1680, 1840];
+let deaths = 0;
+const state = {};
+
+function reset(){
+  Object.assign(state, {
+    p: {x:40, y:GY-22, w:22, h:22, vx:0, vy:0, onGround:false, coyote:0, buffer:0, boost:false},
+    dead:false, deadT:0, won:false, cause:'',
+    pitOpen:false, pitT:0,
+    slider:{x:420, active:false, gone:false},
+    crusher:{x:480, y:-80, w:60, h:72, vy:0, state:'wait', lt:0, plug:null},
+    invT:0, invUsed:false,
+    plat:{y:GY, t:-1, vy:0, respawn:0},
+    bsodT:0, bsodUsed:false,
+    star:{alive:true, x:1330, y:GY-62, home:false},
+    ice:{started:false, t:0, list:ICICLES.map(x=>({x, y:-30, vy:0, st:'hang'}))},
+    door:{x:2040, y:GY-52, w:34, h:52, phase:1, t:0},
+    pop:{h:0, active:false},
+    chaser:{x:0, on:false}, ceil:0, mirror:false,
+    springT:0, cam:0,
+    hint:'Уровень 1 из 1. Просто иди вправо →',
+    shake:0, glitch:0, particles:[], msg:'', msgT:0, t:0
+  });
+}
+let cp = null; // чекпоинт: появляется, когда дверь улетает
+function hardRestart(){ deaths = 0; cp = null; reset(); }
+function applyCheckpoint(){
+  state.pitOpen = true; state.pitT = 99;
+  state.slider.gone = true; state.invUsed = true; state.bsodUsed = true;
+  state.ice.started = true; state.ice.t = 999;
+  for (const s of state.ice.list){ s.st = 'floor'; s.y = GY - 26; }
+  Object.assign(state.door, {x:40, y:GY-52, phase:2});
+  state.p.x = 1925; state.cam = WORLD - W;
+  state.chaser.on = true; state.chaser.x = state.p.x + 260;
+  const c = state.crusher;
+  if (cp.plug){ Object.assign(c, {state:'plug', plug:cp.plug, x:cp.rx, y:GY}); }
+  else { Object.assign(c, {state:'chase', plug:null, x:cp.rx, y:GY-72}); }
+  state.hint = 'Чекпоинт. Дверь всё ещё у старта ←';
+}
+reset();
+
+function rect(a,b){ return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y; }
+
+function solids(){
+  // 700–760 — фальшивый пол: рисуется, но не держит
+  const s = [{x:0,y:GY,w:220,h:80},{x:300,y:GY,w:400,h:80},{x:760,y:GY,w:300,h:80},{x:1260,y:GY,w:WORLD-1260,h:80}];
+  if (!state.pitOpen) s.push({x:220,y:GY,w:80,h:80});
+  const c = state.crusher;
+  if (c.state==='landed' || c.state==='chase' || c.state==='rise') s.push({x:c.x,y:c.y,w:c.w,h:c.h});
+  if (c.state==='plug') s.push({x:c.x,y:GY,w:c.w,h:80});
+  if (state.plat.y < H) s.push({x:1130,y:state.plat.y,w:60,h:16});
+  return s;
+}
+
+function die(cause){
+  if (state.dead || state.won) return;
+  state.dead = true; state.deadT = 0; deaths++; state.cause = cause||'';
+  state.shake = 18; state.glitch = 22;
+  state.msg = taunts[Math.floor(Math.random()*taunts.length)]; state.msgT = 999;
+  const p = state.p;
+  for (let i=0;i<26;i++){
+    const a = Math.random()*Math.PI*2, v = 2+Math.random()*6;
+    state.particles.push({x:p.x+11,y:p.y+11,vx:Math.cos(a)*v,vy:Math.sin(a)*v-2,life:50+Math.random()*30,s:3+Math.random()*5});
+  }
+  beep(400, 40, 0.45, 'sawtooth', 0.1);
+}
+
+/* ---------- логика ---------- */
+function step(){
+  state.t++;
+  if (state.shake>0) state.shake--;
+  if (state.glitch>0) state.glitch--;
+  for (const q of state.particles){ q.x+=q.vx; q.y+=q.vy; q.vy+=0.35; q.life--; }
+  state.particles = state.particles.filter(q=>q.life>0);
+
+  if (state.won) return;
+  if (state.dead){
+    state.deadT++;
+    if (state.deadT > 55){ const m = state.msg; reset(); if (cp) applyCheckpoint(); state.msg = m; state.msgT = 70; }
+    return;
+  }
+  if (state.msgT>0) state.msgT--;
+
+  const p = state.p;
+  let dir = (keys.right?1:0) - (keys.left?1:0);
+  if (state.invT > 0){ dir = -dir; state.invT--; if (state.invT % 9 === 0) state.glitch = Math.max(state.glitch, 4); }
+  if (state.bsodT > 0) state.bsodT--;
+
+  p.vx = dir * 4.2;
+
+  // прыжок с «койот-таймом» и буфером, чтобы было честно
+  if (jumpPressed){ p.buffer = 7; jumpPressed = false; }
+  if (p.buffer>0) p.buffer--;
+  if (p.onGround) p.coyote = 6; else if (p.coyote>0) p.coyote--;
+  if (p.buffer>0 && p.coyote>0){
+    p.vy = -11.5; p.buffer = 0; p.coyote = 0; beep(520, 880, 0.12, 'square', 0.05);
+  }
+  if (p.vy >= 0) p.boost = false;
+
+  p.vy = Math.min(p.vy + 0.65, 14);
+
+  const S = solids();
+  p.x += p.vx;
+  if (p.x < 0) p.x = 0;
+  if (p.x + p.w > WORLD) p.x = WORLD - p.w;
+  for (const s of S) if (rect(p,s)){ if (p.vx>0) p.x = s.x - p.w; else if (p.vx<0) p.x = s.x + s.w; }
+  p.y += p.vy; p.onGround = false; let standOn = null;
+  for (const s of S) if (rect(p,s)){
+    if (p.vy>0){ p.y = s.y - p.h; p.vy = 0; p.onGround = true; standOn = s; }
+    else if (p.vy<0){ p.y = s.y + s.h; p.vy = 0; }
+  }
+  const cx = p.x + p.w/2;
+  const door = state.door;
+  const going = door.phase===1;
+
+  /* 1. пол проваливается под «Безопасно ✓» */
+  if (!state.pitOpen && going && cx > 190 && cx < 300){
+    state.pitOpen = true; state.shake = 6; beep(200, 60, 0.3, 'triangle', 0.1);
+    state.hint = 'Ну я же сказал — просто иди. Не беги.';
+  }
+
+  /* 2. шип едет навстречу */
+  const sl = state.slider;
+  if (!sl.active && !sl.gone && cx > 350){ sl.active = true; state.hint = 'Шипы стоят на месте. Обычно.'; beep(900,300,0.15,'square',0.04); }
+  if (sl.active){ sl.x -= 6.5; if (sl.x < -40){ sl.active = false; sl.gone = true; } }
+  if (!sl.gone && rect(p, {x:sl.x+5, y:GY-20, w:18, h:20})) die('slider');
+
+  /* 3. камень падает за спиной, потом катится следом. Избавиться — заманить в дыру */
+  const c = state.crusher;
+  if (c.state==='wait' && p.x + p.w > 500){ c.state='fall'; state.hint = 'Смотри наверх. Хотя уже поздно.'; }
+  if (c.state==='fall'){
+    c.vy += 1.4; c.y += c.vy;
+    if (rect(p, {x:c.x+2,y:c.y,w:c.w-4,h:c.h})) die('crusher');
+    if (c.y + c.h >= GY){ c.y = GY - c.h; c.state='landed'; c.lt = 0; state.shake = 10; beep(120,40,0.25,'sawtooth',0.12); }
+  }
+  if (c.state==='landed' && ++c.lt > 20){ c.state = 'chase'; state.hint = 'Камень обиделся. Он идёт за тобой.'; beep(70,50,0.4,'sawtooth',0.1); }
+  if (c.state==='plug' && c.plug==='fake' && door.phase===2 && cx < c.x - 60){
+    c.state = 'rise'; c.plug = null; state.hint = 'Камень проснулся. Опять.'; state.shake = 8; beep(60,120,0.4,'sawtooth',0.1);
+  }
+  if (c.state==='rise'){ c.y -= 6; c.x -= 5; if (c.y <= GY-72){ c.y = GY-72; c.state='chase'; } } // вылезает и выпрыгивает влево из дыры
+  if (c.state==='chase'){
+    const sp = door.phase===2 ? 2.8 : 2.4, d = (cx - c.w/2) - c.x;
+    c.x += Math.sign(d) * Math.min(sp, Math.abs(d));
+    if (rect(p, {x:c.x, y:c.y, w:c.w, h:c.h}) && p.y + p.h > c.y + 4) die('rock');
+    const holes = [['fake',700,60]]; if (state.pitOpen) holes.push(['pit',220,80]);
+    for (const [name,hx,hw] of holes){
+      if (c.x >= hx-3 && c.x + c.w <= hx + hw + 3){
+        c.state = 'sink'; c.vy = 0; c.plug = name; c.x = Math.max(hx, Math.min(hx+hw-c.w, c.x));
+        state.hint = 'Камень заткнул дыру. Спасибо, камень.'; break;
+      }
+    }
+  }
+  if (c.state==='sink'){
+    c.vy += 1.2; c.y += c.vy;
+    if (c.y >= GY){ c.y = GY; c.state = 'plug'; state.shake = 12; beep(100,30,0.4,'sawtooth',0.12); }
+  }
+  /* 4. фальшивый пол (700–760) — подсказка, когда уже падаешь */
+  if (p.y > GY && cx > 700 && cx < 760) state.hint = 'Этот кусок пола был нарисован. Для красоты.';
+
+  /* 5. управление переворачивается */
+  if (!state.invUsed && cx > 850 && going){
+    state.invUsed = true; state.invT = 150; state.glitch = 20;
+    state.hint = 'ВЛЕВО — ЭТО ВПРАВО. ВПРАВО — ЭТО ВЛЕВО.';
+    beep(60, 1200, 0.4, 'sawtooth', 0.07);
+  }
+
+  /* 6. пружина «Прыгай!» → в потолочные шипы */
+  const spring = {x:900, y:GY-14, w:34, h:14};
+  if (state.springT>0) state.springT--;
+  if (p.vy >= 0 && rect(p, spring) && p.y + p.h <= GY + 1){
+    p.vy = -24; p.boost = true; state.springT = 12; beep(300, 1400, 0.25, 'square', 0.07);
+    state.hint = 'Ты правда послушался таблички?';
+  }
+  if (door.phase===2 && state.ceil < 296){ state.ceil = Math.min(296, state.ceil + 4); }
+  if (p.y < 22 + state.ceil && p.x + p.w > 840 && p.x < 1000) die('ceiling');
+
+  /* 7. платформа над ямой падает, когда на неё встаёшь */
+  const pl = state.plat;
+  if (pl.t < 0 && standOn && standOn.x===1130){ pl.t = 0; beep(300,200,0.1,'triangle',0.05); }
+  if (pl.t >= 0){
+    pl.t++;
+    if (pl.t > (door.phase===2 ? 5 : 14)){ pl.vy += 0.9; pl.y += pl.vy; if (pl.t===15) state.hint = 'Платформы тоже устают.'; }
+    if (pl.y > H + 40){ pl.respawn++; if (pl.respawn > 80){ pl.y = GY; pl.t = -1; pl.vy = 0; pl.respawn = 0; } }
+  }
+
+  /* 8. игра «зависает» (фальшивый синий экран) */
+  if (!state.bsodUsed && cx > 1300 && going){ state.bsodUsed = true; state.bsodT = 85; beep(80,80,0.6,'square',0.09); }
+
+  /* 9. «+1 ЖИЗНЬ» — убивает. Под ней можно просто пройти */
+  const st = state.star;
+  if (door.phase===2 && !st.home && cx < 1515){ st.home = true; state.hint = '«+1 ЖИЗНЬ» хочет познакомиться.'; beep(900,1500,0.2,'triangle',0.05); }
+  if (st.home){
+    const tx = cx - 11, ty = p.y;
+    st.x += Math.sign(tx - st.x) * Math.min(1.5, Math.abs(tx - st.x));
+    st.y += Math.sign(ty - st.y) * Math.min(1.5, Math.abs(ty - st.y));
+    st.y = Math.max(GY-200, Math.min(GY-22, st.y));
+  }
+  if (st.alive){
+    const sy = st.home ? st.y : GY - 62 + Math.sin(state.t/12)*4;
+    if (rect(p, {x:st.x+2, y:sy+2, w:18, h:18})){ state.hint = 'Жадность наказуема.'; die('star'); }
+  }
+
+  /* 10. сосульки-шипы падают по очереди и остаются на полу */
+  const ice = state.ice;
+  if (!ice.started && p.x + p.w > 1430 && going){ ice.started = true; state.hint = 'Сверху что-то капает…'; }
+  if (ice.started){
+    ice.t++;
+    ice.list.forEach((s, i) => {
+      if (s.st==='hang' && ice.t > i*18){ s.st = 'fall'; beep(1200,600,0.08,'square',0.03); }
+      if (s.st==='fall'){
+        s.vy += 1.4; s.y += s.vy;
+        if (s.y + 26 >= GY){ s.y = GY - 26; s.st = 'floor'; state.shake = Math.max(state.shake, 4); }
+      }
+      if (s.st!=='hang' && rect(p, {x:s.x+5, y:s.y+6, w:18, h:20})) die('ice');
+    });
+  }
+
+  /* 11. дверь убегает к старту */
+  if (going && p.x + p.w > 1960){
+    door.phase = 'run'; door.t = 0; state.hint = 'Дверь передумала. Она у старта ←';
+    cp = {plug: state.crusher.state==='plug' ? state.crusher.plug : null, rx: state.crusher.x};
+    beep(700, 200, 0.5, 'triangle', 0.08);
+  }
+  if (door.phase==='run'){
+    door.t++;
+    const k = Math.min(door.t/110, 1), e = k<.5 ? 2*k*k : 1-Math.pow(-2*k+2,2)/2;
+    door.x = 2040 + (40-2040)*e;
+    door.y = (GY-52) - Math.sin(k*Math.PI)*330;
+    if (k>=1){
+      door.phase = 2; door.x = 40; door.y = GY-52;
+      state.chaser.on = true; state.chaser.x = p.x + 260;
+      state.hint = 'Дверь у старта. И за тобой кто-то идёт →';
+      beep(90, 60, 0.8, 'sawtooth', 0.1);
+    }
+  }
+
+  /* 12. на обратном пути: шип из пола у самой двери */
+  const ch = state.chaser;
+  if (ch.on){
+    ch.x -= 3.5;
+    if (ch.x < -80) ch.on = false;
+    if (p.x + p.w > ch.x + 6) die('chaser');
+  }
+  const mir = door.phase===2 && cx > 1250 && cx < 1750;
+  if (mir && !state.mirror){ state.hint = 'Зеркало. Удачи.'; state.glitch = 14; beep(200,2000,0.3,'sine',0.06); }
+  state.mirror = mir;
+
+  const pop = state.pop;
+  if (door.phase===2 && !pop.active && cx < 235 && p.onGround){ pop.active = true; beep(1000,500,0.1,'square',0.05); state.hint = 'Последний подарок.'; }
+  if (pop.active && pop.h < 26) pop.h += 4.5;
+  if (pop.h > 6 && rect(p, {x:122, y:GY-pop.h+4, w:26, h:pop.h})) die('pop');
+
+  /* победа */
+  if (door.phase===2 && rect(p, {x:door.x+6,y:door.y+6,w:door.w-12,h:door.h-6})){
+    state.won = true; state.glitch = 0; beep(523,1046,0.6,'triangle',0.1);
+    setTimeout(()=>beep(659,1318,0.6,'triangle',0.1),150);
+  }
+
+  if (p.y > H + 20) die('fall');
+
+  // камера
+  const target = Math.max(0, Math.min(WORLD - W, cx - W*0.42));
+  state.cam += (target - state.cam) * 0.15;
+}
+
+/* ---------- отрисовка ---------- */
+const INK = '#141414';
+function spikeTri(x, baseY, w, h, up=true){
+  ctx.beginPath();
+  if (up){ ctx.moveTo(x, baseY); ctx.lineTo(x+w/2, baseY-h); ctx.lineTo(x+w, baseY); }
+  else { ctx.moveTo(x, baseY); ctx.lineTo(x+w/2, baseY+h); ctx.lineTo(x+w, baseY); }
+  ctx.closePath(); ctx.fill();
+}
+function sign(x, text, good){
+  const w = 70 + text.length*4;
+  ctx.fillStyle = INK; ctx.fillRect(x+w/2-2, GY-60, 4, 60);
+  ctx.fillStyle = good ? '#b9f6ca' : '#ffd23f';
+  ctx.fillRect(x, GY-92, w, 34);
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.strokeRect(x, GY-92, w, 34);
+  ctx.fillStyle = INK; ctx.font = 'bold 15px system-ui,sans-serif'; ctx.textAlign='center';
+  ctx.fillText(text, x+w/2, GY-70);
+}
+
+function drawBSOD(){
+  ctx.fillStyle = '#0a3d91'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'left';
+  ctx.font = 'bold 90px system-ui,sans-serif'; ctx.fillText(':(', 80, 170);
+  ctx.font = '24px system-ui,sans-serif';
+  ctx.fillText('Игра столкнулась с проблемой и будет перезапущена.', 80, 240);
+  ctx.fillText('Мы собираем сведения об ошибке.', 80, 275);
+  const pct = Math.min(100, Math.floor((85 - state.bsodT) * 1.6));
+  ctx.fillText(pct + '% завершено', 80, 330);
+  ctx.font = '16px system-ui,sans-serif';
+  ctx.fillText('Код остановки: PLAYER_TOO_CONFIDENT', 80, 420);
+}
+
+function draw(){
+  ctx.save();
+  if (state.shake>0) ctx.translate((Math.random()-.5)*state.shake, (Math.random()-.5)*state.shake);
+  ctx.fillStyle = '#f4efe6'; ctx.fillRect(-20,-20,W+40,H+40);
+
+  ctx.save();
+  if (state.mirror){ ctx.translate(W, 0); ctx.scale(-1, 1); }
+  ctx.translate(-Math.round(state.cam), 0);
+
+  // земля
+  ctx.fillStyle = INK;
+  for (const s of solids()){ if (s.y===GY && s.h===80) ctx.fillRect(s.x, s.y, s.w, s.h); }
+  ctx.fillRect(700, GY, 60, 80); // фальшивый пол — выглядит так же
+  if (state.pitOpen && state.pitT < 40){ state.pitT++; ctx.fillRect(220, GY + state.pitT*state.pitT*0.5, 80, 80); }
+
+  // таблички-обманки
+  if (!state.pitOpen) sign(150, 'Безопасно ✓', true);
+  sign(830, 'Прыгай ↓', false);
+  sign(1010, 'Надёжно', true);
+  sign(1640, 'Почти выход', true);
+
+  // потолочные шипы над пружиной
+  ctx.fillStyle = INK; ctx.fillRect(840, 0, 160, 8 + state.ceil);
+  for (let x=840; x<1000; x+=20) spikeTri(x, 8 + state.ceil, 20, 18, false);
+
+  // пружина
+  const sq = state.springT>0 ? 0 : 1;
+  ctx.fillStyle = '#e63946'; ctx.fillRect(900, GY-14 - (1-sq)*10, 34, 6);
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.beginPath();
+  for (let i=0;i<=4;i++){ ctx.lineTo(904 + (i%2)*26, GY - 8 + i*2 - (1-sq)*(4-i)*2); }
+  ctx.stroke();
+
+  // падающая платформа
+  const pl = state.plat;
+  if (pl.y < H){
+    const wob = pl.t>=0 && pl.t<=14 ? (Math.random()-.5)*3 : 0;
+    ctx.fillStyle = '#8d6e63'; ctx.fillRect(1130+wob, pl.y, 60, 16);
+    ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.strokeRect(1131.5+wob, pl.y+1.5, 57, 13);
+  }
+
+  // едущий шип
+  if (!state.slider.gone){ ctx.fillStyle = INK; spikeTri(state.slider.x, GY, 28, 26); }
+
+  // шип из пола
+  if (state.pop.h>0){ ctx.fillStyle = INK; spikeTri(120, GY, 30, state.pop.h); }
+
+  // «+1 ЖИЗНЬ»
+  if (state.star.alive){
+    const st = state.star, sx = st.x;
+    const sy = st.home ? st.y : GY - 62 + Math.sin(state.t/12)*4;
+    ctx.fillStyle = st.home && state.t%8<4 ? '#ff5d73' : '#ffd23f'; ctx.fillRect(sx, sy, 22, 22);
+    ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.strokeRect(sx+1.5, sy+1.5, 19, 19);
+    ctx.fillStyle = INK; ctx.font = 'bold 16px system-ui,sans-serif'; ctx.textAlign='center';
+    ctx.fillText(st.home ? '>:)' : '+', sx+11, sy+16);
+    ctx.font = 'bold 12px system-ui,sans-serif'; ctx.fillText('+1 ЖИЗНЬ', sx+11, sy-8);
+  }
+  // стена с шипами-преследователь
+  if (state.chaser.on){
+    const x = state.chaser.x;
+    ctx.fillStyle = '#7a0019'; ctx.fillRect(x, 0, 600, H);
+    ctx.fillStyle = INK;
+    for (let y=0; y<GY; y+=24){ ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x-16, y+12); ctx.lineTo(x, y+24); ctx.fill(); }
+    ctx.fillStyle = '#fff'; ctx.fillRect(x+14, 200, 10, 10); ctx.fillRect(x+34, 200, 10, 10);
+  }
+
+  // сосульки
+  ctx.fillStyle = INK;
+  ctx.fillRect(1500, 0, 380, 6);
+  for (const s of state.ice.list){
+    if (s.st==='floor') spikeTri(s.x, GY, 28, 26);
+    else spikeTri(s.x, s.y + (s.st==='hang' ? 36 : 0), 28, 26, false);
+  }
+
+  // падающий блок
+  const c = state.crusher;
+  const angry = c.state==='chase' || c.state==='rise';
+  const jig = angry ? Math.sin(state.t*0.6)*1.5 : 0;
+  const ch2 = c.state==='plug' ? 26 : c.h;
+  ctx.fillStyle = '#6c757d'; ctx.fillRect(c.x, c.y+jig, c.w, ch2);
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.strokeRect(c.x+1.5, c.y+1.5+jig, c.w-3, ch2-3);
+  if (c.state!=='plug'){
+    ctx.fillStyle = angry ? '#e63946' : INK;
+    ctx.fillRect(c.x+14, c.y+24+jig, 8, 8); ctx.fillRect(c.x+38, c.y+24+jig, 8, 8);
+    ctx.fillStyle = INK;
+    if (angry){
+      ctx.beginPath(); ctx.moveTo(c.x+10,c.y+14+jig); ctx.lineTo(c.x+26,c.y+21+jig); ctx.lineTo(c.x+26,c.y+17+jig); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(c.x+50,c.y+14+jig); ctx.lineTo(c.x+34,c.y+21+jig); ctx.lineTo(c.x+34,c.y+17+jig); ctx.fill();
+    }
+    ctx.fillRect(c.x+16, c.y+48+jig, 28, 5);
+  } else { ctx.fillStyle = INK; ctx.fillRect(c.x+14, c.y+10, 8, 3); ctx.fillRect(c.x+38, c.y+10, 8, 3); }
+  if (c.state==='wait'){ ctx.fillStyle = INK; ctx.fillRect(c.x+28, 0, 4, Math.max(0, c.y)); }
+
+  // флаг чекпоинта
+  ctx.fillStyle = INK; ctx.fillRect(1935, GY-70, 4, 70);
+  ctx.fillStyle = cp ? '#2ecc71' : '#bbb';
+  ctx.beginPath(); ctx.moveTo(1939, GY-70); ctx.lineTo(1969, GY-60); ctx.lineTo(1939, GY-50); ctx.fill();
+
+  // дверь
+  const d = state.door;
+  ctx.fillStyle = '#2a9d8f'; ctx.fillRect(d.x, d.y, d.w, d.h);
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.strokeRect(d.x+1.5, d.y+1.5, d.w-3, d.h-3);
+  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(d.x+d.w-9, d.y+d.h/2+4, 3.5, 0, 7); ctx.fill();
+  ctx.fillStyle = INK; ctx.font='bold 12px system-ui,sans-serif'; ctx.textAlign='center';
+  ctx.fillText(d.phase==='run' ? 'пока!' : 'ВЫХОД', d.x+d.w/2, d.y-8);
+
+  // игрок
+  const p = state.p;
+  if (!state.dead){
+    ctx.fillStyle = '#e63946'; ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.strokeRect(p.x+1.5, p.y+1.5, p.w-3, p.h-3);
+    const look = keys.right ? 2 : keys.left ? -2 : 0;
+    ctx.fillStyle = '#fff'; ctx.fillRect(p.x+5+look, p.y+6, 5, 5); ctx.fillRect(p.x+13+look, p.y+6, 5, 5);
+    ctx.fillStyle = INK; ctx.fillRect(p.x+7+look, p.y+8, 2, 2); ctx.fillRect(p.x+15+look, p.y+8, 2, 2);
+  }
+  for (const q of state.particles){ ctx.fillStyle = q.life%6<3 ? '#e63946' : INK; ctx.fillRect(q.x, q.y, q.s, q.s); }
+  ctx.restore(); // конец мира, дальше HUD
+
+  // подсказка сверху
+  ctx.textAlign = 'left'; ctx.fillStyle = INK;
+  ctx.font = 'bold 20px system-ui,sans-serif';
+  let hint = state.hint;
+  if (state.invT>0 && state.t%10<5) hint = hint.split('').map(ch => Math.random()<.25 ? '#%&?!@'[Math.floor(Math.random()*6)] : ch).join('');
+  ctx.fillText(hint, 24, 52);
+  ctx.textAlign = 'right'; ctx.font = 'bold 18px system-ui,sans-serif';
+  ctx.fillText('Смертей: ' + deaths, W-24, 52);
+  ctx.font = '13px system-ui,sans-serif'; ctx.fillStyle = '#555';
+  ctx.fillText(isTouch ? 'слева — ходить, справа — прыжок' : '← → / A D — ходить,  ↑ / W / Пробел — прыжок,  R — заново', W-24, 76);
+
+  if (state.msgT>0 && state.msg){
+    ctx.textAlign='center'; ctx.font='bold 34px system-ui,sans-serif';
+    ctx.fillStyle = INK; ctx.fillText(state.msg, W/2, 230);
+  }
+  ctx.restore();
+
+  if (state.bsodT > 0 && !state.dead) drawBSOD();
+
+  // глитч
+  if (state.glitch>0){
+    for (let i=0;i<6;i++){
+      const y = Math.random()*H, h = 6+Math.random()*30, dx = (Math.random()-.5)*60;
+      try { ctx.drawImage(cv, 0, y, W, h, dx, y, W, h); } catch(e){}
+    }
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = Math.random()<.5 ? '#00e5ff' : '#ff0055';
+    ctx.fillRect(0, Math.random()*H, W, 4+Math.random()*12);
+    ctx.globalAlpha = 1;
+  }
+  if (state.invT>0){
+    ctx.fillStyle = 'rgba(0,0,0,.06)';
+    for (let y=0;y<H;y+=4) ctx.fillRect(0,y,W,2);
+  }
+
+  if (state.won){
+    ctx.fillStyle = 'rgba(20,20,20,.85)'; ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center'; ctx.fillStyle='#ffd23f'; ctx.font='bold 52px system-ui,sans-serif';
+    ctx.fillText('ТЫ ПРОШЁЛ.', W/2, 210);
+    ctx.fillStyle='#fff'; ctx.font='bold 24px system-ui,sans-serif';
+    ctx.fillText('Смертей: ' + deaths + (deaths===0 ? '. Ты читер?' : deaths<15 ? '. Подозрительно мало.' : deaths<40 ? '. Неплохо.' : '. Зато не сдался.'), W/2, 262);
+    ctx.font='18px system-ui,sans-serif'; ctx.fillStyle='#bbb';
+    ctx.fillText('Уровня 2 нет. Это тоже ловушка.', W/2, 300);
+    ctx.fillText(isTouch ? 'Коснись экрана — заново' : 'Прыжок или R — заново', W/2, 340);
+  }
+}
+
+/* ---------- цикл с фиксированным шагом ---------- */
+let last = performance.now(), acc = 0;
+function loop(now){
+  acc += Math.min(now - last, 100); last = now;
+  while (acc >= 1000/60){ if (!paused && !portrait) step(); acc -= 1000/60; }
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
